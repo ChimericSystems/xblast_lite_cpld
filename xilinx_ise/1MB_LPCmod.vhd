@@ -22,8 +22,25 @@
 -- Support for onboard TSOP recover a la Matrix/Chameleon (Xbox TSOP A15)
 -- Support for general purpose input and output pins
 -- Support Xodus software control scheme
--- Basic Chihiro MediaBoard spoof
 -- Originally designed for XC9572XL CPLD
+
+--BANK NAME                     DATA BYTE     A20|A19|A18  ADDRESS OFFSET
+
+--UBANK1 (USER BIOS 256kB)      XXXX 0000     0 |0 |0      0x000000
+--UBANK2 (USER BIOS 256kB)      XXXX 0001     0 |0 |1      0x040000
+--UBANK3 (USER BIOS 256kB)      XXXX 0010     0 |1 |0      0x080000
+--UBANK4 (USER BIOS 256kB)      XXXX 0011     0 |1 |1      0x0C0000
+
+--SBANK1 (SYSTEM BIOS 256kB)    XXXX 0100     1 |0 |0      0x100000
+--SBANK2 (SYSTEM BIOS 256kB)    XXXX 0101     1 |0 |1      0x140000
+--SBANK3 (SYSTEM BIOS 256kB)    XXXX 0110     1 |1 |0      0x180000
+--SBANK4 (SYSTEM BIOS 256kB)    XXXX 0111     1 |1 |1      0x1C0000
+
+--UBANK1 (USER BIOS 512kB)      XXXX 1000     0 |0 |X      0x000000
+--UBANK2 (USER BIOS 512kB)      XXXX 1001     0 |1 |X      0x080000
+--UBANK1 (USER BIOS 1MB)        XXXX 1010     0 |X |X      0x000000
+
+--REGISTER BANK 2048kB          XXXX 1111     X |X |X      0x000000
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -78,18 +95,14 @@ architecture arch_lpcmod of entity_lpcmod is
     
     constant c_LAD_ADDR_PATTERN1: std_Logic_vector := "1111";
     
-    constant c_LAD_ST49LF080A_ADDR_PATTERN1: std_Logic_vector := "1110"; -- 1st (highest) addr nibble. Fixed addr bit & MSB Chip ID
-    constant c_LAD_ST49LF080A_ADDR_PATTERN2: std_Logic_vector := "0100"; -- 2nd addr nibble. chip ID bit(2) & Memory access signal bit & 2 LSB Chip ID.
-    
-    constant c_DEV_ID_LOW_NIBBLE: std_logic_vector := "0101";  -- SmartXX OPX/XBlast Lite ID
-    constant c_DEV_ID_HIGH_NIBBLE: std_logic_vector := "0001"; -- XBlast gen1
-    
-    constant c_MEDIABOARD_SPOOF_ID_LOW_NIBBLE: std_logic_vector := "0000";   -- FPGA MediaBoard revision. Change to X"1" to spoof ASIC revision.
-    constant c_MEDIABOARD_SPOOF_ID_HIGH_NIBBLE: std_logic_vector := "0000";  -- MediaBoard spoof (very basic...).
+    constant c_LAD_ST49LF160C_ADDR_PATTERN1: std_Logic_vector := "1100"; -- Last fixed addr bit & 2 MSB Chip ID
+    constant c_LAD_ST49LF160C_ADDR_PATTERN2: std_Logic_vector := "010"; -- chip ID bit(1) & Memory access signal bit & LSB Chip ID
+
+    constant c_DEV_ID_LOW_NIBBLE: std_logic_vector := "1001";  
+    constant c_DEV_ID_HIGH_NIBBLE: std_logic_vector := "0111"; 
     
     constant c_LAD_IOREG_PATTERN1: std_Logic_vector := "1111";
     constant c_LAD_XODUS_PATTERN1: std_Logic_vector := "0000";
-    constant c_LAD_MBOARD_PATTERN1: std_Logic_vector := "0100";
     constant c_LAD_IOREG_PATTERN2: std_Logic_vector := "0111";
     constant c_LAD_XODUS_PATTERN2: std_Logic_vector := "0000";
     constant c_LAD_IOREG_PATTERN3: std_Logic_vector := "0000";
@@ -114,12 +127,9 @@ architecture arch_lpcmod of entity_lpcmod is
     constant c_FSM_DATA_SEQ_MAX_COUNT: integer := c_FSM_ADDR_SEQ_NIBBLE6;
     
     constant c_LAD_IOREG_RD_DEV_ID: std_Logic_vector := X"1";
-    constant c_LAD_IOREG_RD_MEDIABOARD_RAM: std_Logic_vector := X"4";   -- MediaBoard DIMM size spoof
     constant c_LAD_IOREG_RD_IO: std_Logic_vector := X"D";
     constant c_LAD_IOREG_RD_XODUSID: std_Logic_vector := X"E";
     constant c_LAD_IOREG_RD_STATUS: std_Logic_vector := X"F";
-    constant c_LAD_IOREG_RD_MEDIABOARD_ID: std_Logic_vector := X"F";
-    constant c_LAD_IOREG_MEDIABOARD_SPOOF_GENERIC: std_Logic_vector := X"C";
     
     constant c_LAD_IOREG_WR_LCD_DATA: std_Logic_vector := X"0";
     constant c_LAD_IOREG_WR_LCD_BACKLIGHT: std_Logic_vector := X"1";
@@ -139,9 +149,7 @@ architecture arch_lpcmod of entity_lpcmod is
     constant c_GPO_RESET: std_Logic_vector := "0000";
     
     constant c_LCD_REG_DATA_RESET: std_Logic_vector := "000";
-    
-    constant c_MEDIABOARD_SPOOF_RAM_SIZE: std_Logic_vector := X"3";   -- MediaBoard DIMM size 1024MB
-    
+ 
     constant c_PWM_COUNTER_RESET_VALUE: std_Logic_vector := "000000";
     constant c_PWM_COUNTER_MAX_VALUE: std_Logic_vector := "111111";
     constant c_NULL_DUTY_CYCLE: std_Logic_vector := "000000";
@@ -172,17 +180,13 @@ architecture arch_lpcmod of entity_lpcmod is
     signal s3_lcd_data_high : std_logic_vector(2 downto 0) := c_LCD_REG_DATA_RESET;
     signal s_contrast : boolean := false;                                               -- Result of PWM process calculation
     signal s_backlight : boolean := false;
-    signal s_bank1 : std_logic;                                                         -- Intermediate signal for controlling pout_xbox_a19 on flash chip. Will either be controlled by SW1 or OS.
-    signal s_bank2 : std_logic;                                                         -- Intermediate signal for controlling A18 on flash chip. Will either be controlled by SW2 or OS.
-    signal s_bank2_interm : std_logic;
+    signal s_bank_interm    : std_logic_vector(3 downto 0);
+    signal s_bank           : std_logic_vector(3 downto 0);
     signal s_os_bnkctrl : std_logic := c_FALSE_STD;                                     -- Explicitely defined for a reason.
-    signal s2_os_ctrl_bank_select : std_logic_vector(1 downto 0);                       -- OS desired bank switch state.
+    signal s2_os_ctrl_bank_select : std_logic_vector(3 downto 0);                       -- OS desired bank switch state.
     signal s_os_disable : std_logic := c_FALSE_STD;                                     -- Flag raised by OS to disable modchip and boot from onboard Bios. Force complete mute until power cycle.
     signal s_temp_tsop_drv : std_logic;                                                  -- Flag raised by OS to tell modchip to control TSOP banks
     signal s_xodus_reg_base : std_logic;                                                -- Signal to identify LPC I/O) command standard to Xodus mods.
-    signal s_temp_mediaboard_spoof : boolean;  
-    signal s_mediaboard_spoof : boolean;                                                -- Gated to allow higher speeds. 
-    signal s_mediaboard_f_nibble : boolean;
     signal s_d0_os_ctrl : std_logic := c_TRUE_STD;                                      -- Signal to toggle D0 from a LPC I/0 write command. Does not mute the modchip.
     signal s_a15_os_ctrl : std_logic := c_FALSE_STD;                                    -- Internal signal that maps to pout_xbox_a15 output IO.
     signal s_temp_tsop_bank_ctrl : std_logic := c_FALSE_STD;
@@ -191,19 +195,23 @@ architecture arch_lpcmod of entity_lpcmod is
     signal s_enable_5v : std_logic := '0';
     signal s4_gpo : std_logic_vector(3 downto 0) := c_GPO_RESET;
     signal s_a19_ctrl : std_logic := c_FALSE_STD;
-    
+
+--to remove
+--pout_xbox_a19
+--pout_xbox_a19control
+--s_a19_ctrl
+--s_temp_tsop_bank_ctrl
+--pout_xbox_a15
+--s_a15_os_ctrl;
+
 begin
 
 --***+ direct signals
     pout_xbox_a19control <= s_a19_ctrl;
     s_a19_ctrl <= NOT s_temp_tsop_drv;  -- Because 74LVC125 requires a logic low signal to drive its buffer output.
 
-
-    -- 256KB bank switch logic. Only upper 512KB bank is splitted into 2 256KB banks. Flash layout is as follow:
-    -- 512KB(bank0) + 256KB(bank1) + 256KB(bank2) = 1MB.
-    s_bank2_interm <= pin_manual_bank2 when pin_manual_bank1 = '1' and s_os_bnkctrl = c_FALSE_STD else pinout4_xbox_lad(2);
-    s_bank2 <= s_bank2_interm when s_os_bnkctrl = c_FALSE_STD or s2_os_ctrl_bank_select(1) = '0'  else s2_os_ctrl_bank_select(0);
-    s_bank1 <= pin_manual_bank1 when s_os_bnkctrl = c_FALSE_STD else s2_os_ctrl_bank_select(1);
+    s_bank_interm <= "0100" when pin_manual_bank1 = '1' and pin_manual_bank2 = '1' and  s_os_bnkctrl = c_FALSE_STD else "0000";
+    s_bank <= s_bank_interm when s_os_bnkctrl = c_FALSE_STD else s2_os_ctrl_bank_select(3 downto 0);
 
     -- LCD contrast and backlight.
     pout_lcd_contrast <= '1' when s_contrast = true else '0';
@@ -279,41 +287,25 @@ begin
                                 end if; 
                             when c_FSM_ADDR_SEQ_NIBBLE4 =>
                                 if s_io_cyc = true and pinout4_xbox_lad /= c_LAD_IOREG_PATTERN1 and pinout4_xbox_lad /= c_LAD_XODUS_PATTERN1  then -- IO cycle: first nibble must be "0xF" or "0x0"
-                                        if pinout4_xbox_lad = c_LAD_MBOARD_PATTERN1 then -- 0x40** is also permitted for MediaBoard Spoof.
-                                            s_temp_mediaboard_spoof <= true;
-                                            s_xodus_reg_base <= c_FALSE_STD;
-                                        else
-                                            s_temp_mediaboard_spoof <= false;
-                                            s_io_cyc <= false; -- Kick out of IO cycle state machine's branch
-                                        end if;
+                                    s_io_cyc <= false; -- Kick out of IO cycle state machine's branch
                                 else
                                     s_xodus_reg_base <= NOT pinout4_xbox_lad(3);
-                                    s_temp_mediaboard_spoof <= false;
                                 end if;
                             when c_FSM_ADDR_SEQ_NIBBLE5 =>
-                                if s_io_cyc = true and pinout4_xbox_lad /= c_LAD_IOREG_PATTERN2 and (pinout4_xbox_lad /= c_LAD_XODUS_PATTERN2 or (s_xodus_reg_base = c_FALSE_STD and s_temp_mediaboard_spoof = false)) then     
+                                if s_io_cyc = true and pinout4_xbox_lad /= c_LAD_IOREG_PATTERN2 and (pinout4_xbox_lad /= c_LAD_XODUS_PATTERN2 or (s_xodus_reg_base = c_FALSE_STD)) then     
                                     s_io_cyc <= false; -- Kick out of IO cycle state machine's branch
                                 end if;
                             when c_FSM_ADDR_SEQ_NIBBLE6 =>
-                                s_mediaboard_spoof <= s_temp_mediaboard_spoof; -- At this point, it is already decided if we want to spoof access to MediaBoard or not.
-                                if s_temp_mediaboard_spoof = false then
-                                    if s_io_cyc = true and pinout4_xbox_lad /= c_LAD_IOREG_PATTERN3 and (pinout4_xbox_lad /= c_LAD_XODUS_PATTERN3 or s_xodus_reg_base = c_FALSE_STD) then -- IO cycle: third nibble must have 3 MSBs at "000". 
-                                        s_io_cyc <= false; -- Kick out of IO cycle state machine's branch
-                                    end if;
-                                else
-                                    if pinout4_xbox_lad = c_LAD_IOREG_RD_MEDIABOARD_ID then
-                                        s_mediaboard_f_nibble <= true;
-                                    else
-                                        s_mediaboard_f_nibble <= false;
-                                    end if;
+                        
+                                if s_io_cyc = true and pinout4_xbox_lad /= c_LAD_IOREG_PATTERN3 and (pinout4_xbox_lad /= c_LAD_XODUS_PATTERN3 or s_xodus_reg_base = c_FALSE_STD) then -- IO cycle: third nibble must have 3 MSBs at "000". 
+                                    s_io_cyc <= false; -- Kick out of IO cycle state machine's branch
                                 end if;
+                            
                             when c_FSM_ADDR_SEQ_NIBBLE7 =>
                                 if s_io_cyc = true then
-                                    if s_temp_mediaboard_spoof = true and s_mediaboard_f_nibble = false  then
-                                        s4_io_reg_addr <=  c_LAD_IOREG_MEDIABOARD_SPOOF_GENERIC; -- Use an undefined IOREG address to feed xbox with 0x00 as data.
-                                    else
-                                        s4_io_reg_addr <= pinout4_xbox_lad;
-                                    end if;
+        
+                                    s4_io_reg_addr <= pinout4_xbox_lad;
+
                                 end if;
                                 s_fsm_counter <= c_FSM_COUNT_RESET;
                                 s_lpc_fsm_state <= LPC_FSM_DATA;
@@ -335,7 +327,7 @@ begin
     -- Process that control both LAD ports s_lad_dir
     -- Logic is determined by "s_lpc_fsm_state" and "s_fsm_counter" within a specific "s_lpc_fsm_state" value.
     process(s_lpc_fsm_state, s_lad_dir, s_fsm_counter, s_io_cyc, s4_io_reg_addr, p2in_gpi, s_enable_5v, s_temp_tsop_drv, s_xodus_mode, 
-    s_mediaboard_f_nibble, s_a15_os_ctrl, s2_os_ctrl_bank_select, s4_gpo, pin_manual_bank1, pin_manual_bank2, s_bank1, s_bank2, s_a19_ctrl)
+    s_a15_os_ctrl, s2_os_ctrl_bank_select, s4_gpo, pin_manual_bank1, pin_manual_bank2, s_bank, s_a19_ctrl)
     begin
             if s_lpc_fsm_state = LPC_FSM_DATA and s_lad_dir = c_CYC_DIRECTION_READ and s_fsm_counter >= c_FSM_DATA_SEQ_TARA2_READ and s_fsm_counter <= c_FSM_DATA_SEQ_MAX_COUNT then -- Sequences that reverse data flow. From LPC Flash to Xbox, during read operation.
                     pinout4_flash_lad <= c_LAD_INPUT_PATTERN;
@@ -345,13 +337,9 @@ begin
                         if s_io_cyc = true and s_fsm_counter = c_FSM_DATA_SEQ_DATA1_READ then -- Data low nibble
                             case s4_io_reg_addr is
                                 when c_LAD_IOREG_RD_DEV_ID =>
-                                    if s_mediaboard_f_nibble = false then
-                                        pinout4_xbox_lad <= c_DEV_ID_LOW_NIBBLE;
-                                    else
-                                        pinout4_xbox_lad <= c_MEDIABOARD_SPOOF_ID_LOW_NIBBLE;
-                                    end if;
-                                when c_LAD_IOREG_RD_MEDIABOARD_RAM =>
-                                        pinout4_xbox_lad <= c_MEDIABOARD_SPOOF_RAM_SIZE;
+
+                                    pinout4_xbox_lad <= c_DEV_ID_LOW_NIBBLE;
+
                                 when c_LAD_IOREG_RD_IO =>
                                     pinout4_xbox_lad <= p2in_gpi & s_temp_tsop_drv & s_enable_5v;
                                 when c_LAD_IOREG_RD_XODUSID =>
@@ -364,25 +352,21 @@ begin
                                     -- Mode4(0xC) = on board flash bank
                                     pinout4_xbox_lad <= NOT s_temp_tsop_drv & s_xodus_mode & s_a15_os_ctrl & s2_os_ctrl_bank_select(1);
                                 when others =>
-                                    pinout4_xbox_lad <= c_MEDIABOARD_SPOOF_ID_HIGH_NIBBLE;
+                                    pinout4_xbox_lad <= "0000";
                             end case;
                         elsif s_io_cyc = true and s_fsm_counter = c_FSM_DATA_SEQ_DATA2_READ then -- Data high nibble
                             case s4_io_reg_addr is
                                 when c_LAD_IOREG_RD_DEV_ID => 
-                                    if s_mediaboard_f_nibble = false then
-                                        pinout4_xbox_lad <=c_DEV_ID_HIGH_NIBBLE;
-                                    else
-                                        pinout4_xbox_lad <= c_MEDIABOARD_SPOOF_ID_HIGH_NIBBLE;
-                                    end if;
+                                    pinout4_xbox_lad <=c_DEV_ID_HIGH_NIBBLE;
                                 when c_LAD_IOREG_RD_IO =>
                                     pinout4_xbox_lad <= s4_gpo;
                                 when c_LAD_IOREG_RD_XODUSID =>
                                     -- Spoof Chameleon modchip. Normally only maps to addr 0x00FE.
                                     pinout4_xbox_lad <= pin_manual_bank1 & '0' & pin_manual_bank2 & '0';    --Don't touch to the manual bank select header port for Chameleon spoof! Should be X"A".
                                 when c_LAD_IOREG_RD_STATUS =>
-                                    pinout4_xbox_lad <= '0' & s2_os_ctrl_bank_select(0) & s_temp_tsop_drv & s2_os_ctrl_bank_select(1);
+                                    pinout4_xbox_lad <=  s2_os_ctrl_bank_select;
                                 when others =>
-                                    pinout4_xbox_lad <= c_MEDIABOARD_SPOOF_ID_HIGH_NIBBLE;
+                                    pinout4_xbox_lad <= "0000";
                             end case;                                                               
                         else
                             pinout4_xbox_lad <= pinout4_flash_lad;
@@ -400,13 +384,29 @@ begin
             else    -- If not one of the condition above, it means the data flow goes from the Xbox to the LPC flash. Happens on LFRAME start, CYC decode, 8 address nibbles, TARA1, TARB2 and of course when idle.
                     pinout4_xbox_lad <= c_LAD_INPUT_PATTERN;     -- Also when s_lad_dir = '1' for DATA1 and DATA2.
                     if s_lpc_fsm_state = LPC_FSM_GET_ADDR and s_fsm_counter = c_FSM_ADDR_SEQ_NIBBLE1 then
-                        pinout4_flash_lad <= c_LAD_ST49LF080A_ADDR_PATTERN1;    -- Last fixed addr bit & MSB Flash chip ID
+                        pinout4_flash_lad <= c_LAD_ST49LF160C_ADDR_PATTERN1;    -- Last fixed addr bit & MSB Flash chip ID
                     elsif s_lpc_fsm_state = LPC_FSM_GET_ADDR and s_fsm_counter = c_FSM_ADDR_SEQ_NIBBLE2 then 
-                        pinout4_flash_lad <= c_LAD_ST49LF080A_ADDR_PATTERN2;    -- Flash chip ID bit(2) & Memory access signal bit & 2 LSB Chip ID.
+
+                        if s_bank(3 downto 2) = "01" then -- User Upper 1mb if bank starts with 01
+                            pinout4_flash_lad <= c_LAD_ST49LF160C_ADDR_PATTERN2 & '1'; 
+                        else
+                            pinout4_flash_lad <= c_LAD_ST49LF160C_ADDR_PATTERN2 & '0'; 
+                        end if;
+
                     elsif s_lpc_fsm_state = LPC_FSM_GET_ADDR and s_fsm_counter = c_FSM_ADDR_SEQ_NIBBLE3 then 
-                        pinout4_flash_lad <= s_bank1 & s_bank2 & pinout4_xbox_lad(1 downto 0);  -- Nibble MSB is controlled by switch wired on "HD" solder pad. pin_manual_bank1 has external pull up so leaving this port floating will access the 
-                                                                    -- higher 512KB of flash. Grounding this port will enable the lower 512KB portion of the 1MB flash.
-                                                                    -- Once OS has taken control, it has priority over physical input signals
+
+                        if s_bank(3) = '0' then -- if top bit is 0 treat as 256k banks
+                            pinout4_flash_lad <= s_bank(1 downto 0) & pinout4_xbox_lad(1 downto 0);
+                        else -- top bank bit is 1
+                            if s_bank(2 downto 0) = "000" then -- first 512k bank check
+                                pinout4_flash_lad <= '0' & pinout4_xbox_lad(2 downto 0);
+                            elsif s_bank(2 downto 0) = "001" then -- second 512k bank check
+                                pinout4_flash_lad <= '1' & pinout4_xbox_lad(2 downto 0);
+                            else -- other wise 1mb/2mb bank
+                                pinout4_flash_lad <= pinout4_xbox_lad;
+                            end if;
+                        end if;   
+
                     else
                         pinout4_flash_lad <= pinout4_xbox_lad; -- Transfer of buffer into the flash LPC port.
                     end if;     
@@ -419,7 +419,7 @@ begin
     process(pin_xbox_lclk)
     begin
     if rising_edge(pin_xbox_lclk) then
-        if s_io_cyc = true and s_mediaboard_spoof = false then -- IO operation flag raised. MediaBoard doesn't have the right to talk!
+        if s_io_cyc = true then -- IO operation flag raised.
                     -- Low Data nibble
                     if s_fsm_counter = c_FSM_DATA_WRITE_LO_NIBBLE_OFFSET and s_lad_dir = c_CYC_DIRECTION_WRITE then
                         case s4_io_reg_addr is
@@ -442,7 +442,7 @@ begin
                                     s_temp_tsop_bank_ctrl <= pinout4_xbox_lad(1);
                                     s_a15_os_ctrl <= pinout4_xbox_lad(3);
                                 else
-                                    s2_os_ctrl_bank_select <= pinout4_xbox_lad(1 downto 0); -- OS want to switch active flash bank
+                                    s2_os_ctrl_bank_select <= pinout4_xbox_lad(3 downto 0); -- OS want to switch active flash bank
                                     pout_xbox_a19 <= pinout4_xbox_lad(3);
                                 end if;
                             when others => null;
